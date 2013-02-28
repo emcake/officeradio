@@ -1,7 +1,315 @@
 <html>
   <head>
     <script src='https://cdn.firebase.com/v0/firebase.js'></script>
+    <script src='https://ajax.googleapis.com/ajax/libs/jquery/1.9.0/jquery.min.js'></script>
   </head>
   <body>
+  	<div id='roomDiv'>
+  		<input type='text' id='nameInput' placeholder='Name'>
+  		<input type='text' id='roomInput' placeholder='Room'>
+  	</div>
+  	<div id='clientDiv'>
+	  	<div id='queueDiv'>
+	  		<div id='queueContainer'>
+		    	<div id='tracksDiv'></div>
+		   	</div>
+	    	<input type='text' id='trackInput' placeholder='URL here'>
+	  	</div>
+	  	<div id='chatDiv'>
+		  	<div id='messageContainer'>
+		    	<div id='messagesDiv'></div>
+		   	</div>
+	    	<input type='text' id='messageInput' placeholder='Message'>
+		</div>
+	    <div id='usersDiv'></div>
+
+	    <br><br>
+	    <div id='playerDiv'>
+	    	
+	    </div>
+	</div>
+    
+
+    <script>
+
+	$('#clientDiv').hide();
+    $('#roomInput').keypress(function (e) {
+        if (e.keyCode == 13) {
+          	var room = $('#roomInput').val();
+          	var name = $('#nameInput').val();
+
+      		joinRoom( room, name );
+
+          	$('#roomInput').val('');
+        }
+    });
+
+    var userList = {};
+    var trackQueue = {};
+
+    var isCoordinator = false;
+    var currentTrack  = null;
+
+    var currentPlayTime = 0;
+    var isPlaying = false;
+
+    var currentCoordDuration = 0;
+
+    function joinRoom( room, name )
+    {
+    	$('#roomDiv').hide(1000);
+    	$('#clientDiv').show(1000);
+    	var users = new Firebase('https://officeradio.firebaseio.com/'+room+'/users/');
+    	var chat =  new Firebase('https://officeradio.firebaseio.com/'+room+'/chat/');
+    	var queue = new Firebase('https://officeradio.firebaseio.com/'+room+'/queue/');
+    	var track = new Firebase('https://officeradio.firebaseio.com/'+room+'/track/');
+    	var coord = new Firebase('https://officeradio.firebaseio.com/'+room+'/coordinator/');
+    	var play = new Firebase('https://officeradio.firebaseio.com/'+room+'/play/');
+
+    	setupChat( chat, name );
+    	setupUsers( users );
+    	setupQueueMaintenance( queue );
+
+		chat.push({name: name, join : true});
+		var user = users.push({name: name});
+
+		var playUpdate = play.on('value', function(snapshot){
+			currentPlayTime = snapshot.val();
+		})
+
+		var coordUpdate = coord.on('value', function(snapshot) {
+			if (snapshot.val() == null)
+			{
+				coord.transaction(function(){coord.set(user.toString());});
+			}
+			else
+			{
+				if (snapshot.val() == user.toString())
+				{
+					setupCoordinator( user, coord, play );
+				}
+				var name;
+				new Firebase(snapshot.val()).once('value', function(v){ name = v.val().name; });
+
+				if (userList[name] != null) userList[name].addClass('coordinator');
+			}
+			
+		})
+
+		track.on('value', function(snapshot) {
+			currentTrack = snapshot.val();
+
+			if (currentTrack != null)
+			{
+				// play here
+				var trackData;
+				new Firebase(snapshot.val()).once('value', function(v){ trackData = v.val(); });
+
+				var playStart = currentPlayTime;
+
+				if (playStart != 0) playStart += 1; // compensate for starting up the video player
+
+				loadYoutube( trackData.youtube.ytid, playStart );
+
+				if (isCoordinator)
+				{
+					var myVar=setTimeout(function(){
+						new Firebase(snapshot.val()).remove();
+						track.set(null);
+
+					},1000*trackData.youtube.duration);
+				}
+			}
+			else
+			{
+				clearPlayer();
+				if (isCoordinator)
+				{
+					
+					queue.startAt().limit(1).once("child_added", function(snapshot) {
+						play.set(0);
+					    track.set(snapshot.ref().toString());
+					  });
+				}
+			}
+		});
+
+		window.onbeforeunload = function() {
+			coord.off('value', coordUpdate);
+			if (isCoordinator) coord.set(null);
+		    user.remove();
+		    chat.push({name: name, leave : true});
+
+		}
+    	
+    }
+
+    function clearPlayer( )
+    {
+    	$('#playerDiv').html('');
+    	isPlaying = false;
+    }
+
+    function loadYoutube( ytid, start )
+    {
+    	var html = '<object width="425" height="355"><param name="movie" value="http://www.youtube.com/v/'+ytid+'&iv_load_policy=3&autoplay=1&showinfo=0&volume=100&start='+start+'"></param><param name="allowscriptaccess" value="always"></param><param name="volume" value="100"></param><param name="wmode" value="transparent"></param></param><embed src="http://www.youtube.com/v/'+ytid+'&iv_load_policy=3&autoplay=1&showinfo=0&volume=100&start='+start+'" type="application/x-shockwave-flash" allowscriptaccess="always" wmode="transparent" width="425" height="355" volume="100"></embed></object>'
+    	$('#playerDiv').html(html);
+
+    	isPlaying = true;
+
+    	if (isCoordinator) currentCoordDuration = start;
+    }
+
+    function setupCoordinator( user, coord, play )
+    {
+    	// when I'm quitting, stop me being coordinator
+    	isCoordinator = true;
+
+    	var tick = setInterval(function(){
+			if (isPlaying)
+			{
+				currentCoordDuration++;
+				play.set( currentCoordDuration );
+			}
+    	},1000)
+    }
+
+    function ytGetID( url )
+    {
+    	var video_id = url.split('v=')[1];
+		var ampersandPosition = video_id.indexOf('&');
+		if(ampersandPosition != -1) {
+		  video_id = video_id.substring(0, ampersandPosition);
+		}
+
+		return video_id;
+    }
+
+    function ytPushTrack( ytUrl, queue )
+    {
+    	var video_id = ytGetID( ytUrl );
+
+    	   	$.getJSON('http://gdata.youtube.com/feeds/api/videos/'+video_id+'?v=2&alt=jsonc',function(data,status,xhr){
+		    var data =  {
+		    		url : ytUrl,
+		    		youtube : 
+		    		{
+		    			ytid : video_id,
+		    		 	title : data.data.title,
+		    			thumb : data.data.thumbnail.hqDefault,
+		    			player : data.data.player.default,
+		    			duration : data.data.duration
+		    		}
+		    	};
+
+		    	queue.push(data);
+		    });
+		
+    }
+
+    function setupQueueMaintenance( queue )
+    {
+
+    	$('#trackInput').keypress(function (e) {
+	        if (e.keyCode == 13) {
+	          var text = $('#trackInput').val();
+
+	          ytPushTrack( text, queue );
+
+	          $('#trackInput').val('');
+	        }
+	      });
+
+    	queue.on('child_added', function(snapshot) {
+	        var track = snapshot.val();
+	        var uniqueID = snapshot.ref().name();
+
+        	trackQueue[uniqueID] = $('<div/>').addClass('track').text(track.url);
+
+    		trackQueue[uniqueID].appendTo($('#tracksDiv'));
+	    });
+
+	    queue.on('child_removed', function(snapshot) {
+	        var track = snapshot.val();
+	        var uniqueID = snapshot.ref().name();
+
+        	trackQueue[uniqueID].remove();
+        	trackQueue[uniqueID] = null;
+	    });
+
+    }
+
+    var userList = {};
+
+    function setupUsers( users )
+    {
+
+    	users.on('child_added', function(snapshot) {
+	        var user = snapshot.val();
+
+        	userList[user.name] = $('<div/>').addClass('user').text(user.name);
+
+    		userList[user.name].appendTo($('#usersDiv'));
+	    });
+
+	    users.on('child_removed', function(snapshot) {
+	        var user = snapshot.val();
+
+        	userList[user.name].remove();
+        	userList[user.name] = null;
+	    });
+
+    }
+
+    function setupChat( chat, name )
+    {
+	 	$('#messageInput').keypress(function (e) {
+	        if (e.keyCode == 13) {
+	          var text = $('#messageInput').val();
+	          chat.push({name: name, text: text});
+	          $('#messageInput').val('');
+	        }
+	      });
+
+	      chat.on('child_added', function(snapshot) {
+	        var message = snapshot.val();
+	        if (message.join)
+	        {
+				displayChatMessage(message.name, 'joins', 'join');
+			}
+			else if (message.leave)
+			{
+				displayChatMessage(message.name, 'leaves', 'leave');
+			}
+			else 
+			{
+				displayChatMessage(message.name, message.text, 'msg');
+			}
+	      });
+	      
+    }
+
+    function displayChatMessage(name, text, cssClass) {
+        $('<div/>').addClass(cssClass).text(text).prepend($('<em/>').text(name+': ')).appendTo($('#messagesDiv'));
+        $('#messagesDiv')[0].scrollTop = $('#messagesDiv')[0].scrollHeight;
+	}
+      /*var myDataRef = new Firebase('https://rj8mzygh5ob.firebaseio-demo.com/');
+      $('#messageInput').keypress(function (e) {
+        if (e.keyCode == 13) {
+          var name = $('#nameInput').val();
+          var text = $('#messageInput').val();
+          myDataRef.push({name: name, text: text});
+          $('#messageInput').val('');
+        }
+      });
+      myDataRef.on('child_added', function(snapshot) {
+        var message = snapshot.val();
+		displayChatMessage(message.name, message.text);
+      });
+      function displayChatMessage(name, text) {
+        $('<div/>').text(text).prepend($('<em/>').text(name+': ')).appendTo($('#messagesDiv'));
+        $('#messagesDiv')[0].scrollTop = $('#messagesDiv')[0].scrollHeight;
+      };*/
+    </script>
   </body>
 </html>
