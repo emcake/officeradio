@@ -49,6 +49,7 @@
 
     var isCoordinator = false;
     var currentTrack  = null;
+    var currentTrackDuration = 0;
 
     var currentPlayTime = 0;
     var isPlaying = false;
@@ -86,7 +87,7 @@
 			{
 				if (snapshot.val() == user.toString())
 				{
-					setupCoordinator( user, coord, play );
+					setupCoordinator( user, coord, play, track );
 				}
 				var name;
 				new Firebase(snapshot.val()).once('value', function(v){ name = v.val().name; });
@@ -107,18 +108,11 @@
 
 				var playStart = currentPlayTime;
 
+				currentTrackDuration = trackData.youtube.duration;
+
 				if (playStart != 0) playStart += 1; // compensate for starting up the video player
 
 				loadYoutube( trackData.youtube.ytid, playStart );
-
-				if (isCoordinator)
-				{
-					var myVar=setTimeout(function(){
-						new Firebase(snapshot.val()).remove();
-						track.set(null);
-
-					},1000*trackData.youtube.duration);
-				}
 			}
 			else
 			{
@@ -160,7 +154,7 @@
     	if (isCoordinator) currentCoordDuration = start;
     }
 
-    function setupCoordinator( user, coord, play )
+    function setupCoordinator( user, coord, play, track )
     {
     	// when I'm quitting, stop me being coordinator
     	isCoordinator = true;
@@ -170,6 +164,12 @@
 			{
 				currentCoordDuration++;
 				play.set( currentCoordDuration );
+
+				if (currentCoordDuration >= currentTrackDuration && currentTrack != null)
+				{
+					new Firebase(currentTrack).remove();
+					track.set(null);
+				}
 			}
     	},1000)
     }
